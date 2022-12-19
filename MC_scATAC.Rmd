@@ -629,13 +629,29 @@ saveArchRProject(ArchRProj = projHeme3, outputDirectory = "Save-ProjHeme3", load
 
 ```
 
+# Pseudo-bulk replicates
+
+```{r}
+library(BSgenome.Hsapiens.UCSC.hg19, lib.loc = "/Library/Frameworks/R.framework/Versions/4.2/Resources/library")
+projHeme4 <- addGroupCoverages(ArchRProj = projHeme3, groupBy = "Clusters2")
+
+```
+
+```{r}
+projHeme4 <- addReproduciblePeakSet(
+    ArchRProj = projHeme4, 
+    groupBy = "Clusters2", 
+    pathToMacs2 = "/Users/nzhang/opt/anaconda3/envs/py37/bin/macs2"
+)
+```
+
+```{r}
+getPeakSet(projHeme4)
+
+```
 
 
-
-
-
-
-
+dsfsdf
 
 
 
