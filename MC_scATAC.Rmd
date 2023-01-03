@@ -10,6 +10,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r}
 library(ArchR)
+library(BSgenome.Hsapiens.UCSC.hg19)
 ```
 
 ```{r}
@@ -637,6 +638,7 @@ projHeme4 <- addGroupCoverages(ArchRProj = projHeme3, groupBy = "Clusters2")
 
 ```
 
+# Peak calling
 ```{r}
 projHeme4 <- addReproduciblePeakSet(
     ArchRProj = projHeme4, 
@@ -651,8 +653,473 @@ getPeakSet(projHeme4)
 ```
 
 
-dsfsdf
+```{r}
+saveArchRProject(ArchRProj = projHeme4, outputDirectory = "Save-ProjHeme4", load = FALSE)
+```
 
+```{r}
+projHeme5 <- addPeakMatrix(projHeme4)
+
+```
+
+```{r}
+getAvailableMatrices(projHeme5)
+```
+
+```{r}
+markersPeaks <- getMarkerFeatures(
+    ArchRProj = projHeme5, 
+    useMatrix = "PeakMatrix", 
+    groupBy = "Clusters2",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  testMethod = "wilcoxon"
+)
+```
+
+```{r}
+markersPeaks
+```
+
+```{r}
+markerList <- getMarkers(markersPeaks, cutOff = "FDR <= 0.01 & Log2FC >= 1", returnGR = TRUE)
+markerList
+```
+
+```{r}
+markerList$B
+```
+
+```{r}
+heatmapPeaks <- markerHeatmap(
+  seMarker = markersPeaks, 
+  cutOff = "FDR <= 0.1 & Log2FC >= 0.5",
+  transpose = TRUE
+)
+```
+
+
+```{r}
+draw(heatmapPeaks, heatmap_legend_side = "bot", annotation_legend_side = "bot")
+
+```
+
+```{r}
+pv <- markerPlot(seMarker = markersPeaks, name = "Erythroid", cutOff = "FDR <= 0.1 & Log2FC >= 1", plotAs = "Volcano")
+pv
+```
+
+```{r}
+p <- plotBrowserTrack(
+    ArchRProj = projHeme5, 
+    groupBy = "Clusters2", 
+    geneSymbol = c("GATA1"),
+    features =  getMarkers(markersPeaks, cutOff = "FDR <= 0.1 & Log2FC >= 1", returnGR = TRUE)["Erythroid"],
+    upstream = 50000,
+    downstream = 50000
+)
+```
+```{r}
+grid::grid.newpage()
+grid::grid.draw(p$GATA1)
+```
+
+```{r}
+markerTest <- getMarkerFeatures(
+  ArchRProj = projHeme5, 
+  useMatrix = "PeakMatrix",
+  groupBy = "Clusters2",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "Erythroid",
+  bgdGroups = "Progenitor"
+)
+```
+
+```{r}
+markerPlot(seMarker = markerTest, name = "Erythroid", cutOff = "FDR <= 0.1 & abs(Log2FC) >= 1", plotAs = "Volcano")
+```
+```{r}
+saveArchRProject(ArchRProj = projHeme5, outputDirectory = "Save-ProjHeme5", load = FALSE)
+```
+
+# Motif and Feature Enrichment
+
+```{r}
+projHeme5 <- addMotifAnnotations(ArchRProj = projHeme5, motifSet = "cisbp", name = "Motif")
+```
+
+```{r}
+motifsUp <- peakAnnoEnrichment(
+    seMarker = markerTest,
+    ArchRProj = projHeme5,
+    peakAnnotation = "Motif",
+    cutOff = "FDR <= 0.1 & Log2FC >= 0.5"
+  )
+```
+
+```{r}
+motifsUp
+```
+
+```{r}
+df <- data.frame(TF = rownames(motifsUp), mlog10Padj = assay(motifsUp)[,1])
+df <- df[order(df$mlog10Padj, decreasing = TRUE),]
+df$rank <- seq_len(nrow(df))
+```
+
+```{r}
+head(df)
+```
+
+```{r}
+ggplot(df, aes(rank, mlog10Padj, color = mlog10Padj)) + 
+  geom_point(size = 1) +
+  ggrepel::geom_label_repel(
+        data = df[rev(seq_len(30)), ], aes(x = rank, y = mlog10Padj, label = TF), 
+        size = 1.5,
+        nudge_x = 2,
+        color = "black"
+  ) + theme_ArchR() + 
+  ylab("-log10(P-adj) Motif Enrichment") + 
+  xlab("Rank Sorted TFs Enriched") +
+  scale_color_gradientn(colors = paletteContinuous(set = "comet"))
+```
+```{r}
+enrichMotifs <- peakAnnoEnrichment(
+    seMarker = markersPeaks,
+    ArchRProj = projHeme5,
+    peakAnnotation = "Motif",
+    cutOff = "FDR <= 0.1 & Log2FC >= 0.5"
+  )
+```
+
+```{r}
+heatmapEM <- plotEnrichHeatmap(enrichMotifs, n = 7, transpose = TRUE)
+ComplexHeatmap::draw(heatmapEM, heatmap_legend_side = "bot", annotation_legend_side = "bot")
+
+```
+## The overlap with bulk ATAC-seq peak set
+```{r}
+projHeme5 <- addArchRAnnotations(ArchRProj = projHeme5, collection = "ATAC")
+enrichATAC <- peakAnnoEnrichment(
+    seMarker = markersPeaks,
+    ArchRProj = projHeme5,
+    peakAnnotation = "ATAC",
+    cutOff = "FDR <= 0.1 & Log2FC >= 0.5"
+  )
+```
+
+```{r}
+heatmapATAC <- plotEnrichHeatmap(enrichATAC, n = 7, transpose = TRUE)
+ComplexHeatmap::draw(heatmapATAC, heatmap_legend_side = "bot", annotation_legend_side = "bot")
+
+```
+
+# ChromVAR Deviatons Enrichment
+## chromVAR predicts enrichment of TF activity on a per-cell basis. It also corrects the Tn5 transposase insertion sequence bias.
+```{r}
+if("Motif" %ni% names(projHeme5@peakAnnotation)){
+    projHeme5 <- addMotifAnnotations(ArchRProj = projHeme5, motifSet = "cisbp", name = "Motif")
+}
+```
+
+```{r}
+projHeme5 <- addBgdPeaks(projHeme5)
+
+```
+
+```{r}
+# This function save the result into the "MotifMatrix" matrix which can be used later.
+projHeme5 <- addDeviationsMatrix(
+  ArchRProj = projHeme5, 
+  peakAnnotation = "Motif",
+  force = TRUE
+)
+```
+
+## The variation of each TF motif across all cells.
+```{r}
+plotVarDev <- getVarDeviations(projHeme5, name = "MotifMatrix", plot = TRUE)
+```
+
+
+```{r}
+plotVarDev
+```
+## Check the variation of target TF motifs across all cells.
+### Get the motif names corresponding to each TF
+```{r}
+motifs <- c("GATA1", "CEBPA", "EBF1", "IRF4", "TBX21", "PAX5")
+markerMotifs <- getFeatures(projHeme5, select = paste(motifs, collapse="|"), useMatrix = "MotifMatrix")
+markerMotifs
+```
+
+### Motif names clean up
+```{r}
+markerMotifs <- grep("z:", markerMotifs, value = TRUE)
+markerMotifs <- markerMotifs[markerMotifs %ni% "z:SREBF1_22"]
+markerMotifs
+```
+
+```{r}
+projHeme5 <- addImputeWeights(projHeme5)
+```
+
+```{r}
+p <- plotGroups(ArchRProj = projHeme5, 
+  groupBy = "Clusters2", 
+  colorBy = "MotifMatrix", 
+  name = markerMotifs,
+  imputeWeights = getImputeWeights(projHeme5)
+)
+```
+
+```{r}
+p2 <- lapply(seq_along(p), function(x){
+  if(x != 1){
+    p[[x]] + guides(color = FALSE, fill = FALSE) + 
+    theme_ArchR(baseSize = 6) +
+    theme(plot.margin = unit(c(0.1, 0.1, 0.1, 0.1), "cm")) +
+    theme(
+        axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank(),
+        axis.title.y=element_blank()
+    ) + ylab("")
+  }else{
+    p[[x]] + guides(color = FALSE, fill = FALSE) + 
+    theme_ArchR(baseSize = 6) +
+    theme(plot.margin = unit(c(0.1, 0.1, 0.1, 0.1), "cm")) +
+    theme(
+        axis.ticks.y=element_blank(),
+        axis.title.y=element_blank()
+    ) + ylab("")
+  }
+})
+do.call(cowplot::plot_grid, c(list(nrow = 1, rel_widths = c(2, rep(1, length(p2) - 1))),p2))
+```
+### Plot the motif enrichment z-scores on UMAP
+```{r}
+p <- plotEmbedding(
+    ArchRProj = projHeme5, 
+    colorBy = "MotifMatrix", 
+    name = sort(markerMotifs), 
+    embedding = "UMAP",
+    imputeWeights = getImputeWeights(projHeme5)
+)
+```
+
+```{r}
+p2 <- lapply(p, function(x){
+    x + guides(color = FALSE, fill = FALSE) + 
+    theme_ArchR(baseSize = 6.5) +
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+    theme(
+        axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank(), 
+        axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank()
+    )
+})
+do.call(cowplot::plot_grid, c(list(ncol = 3),p2))
+```
+### Plot the previously infered gene expression scores on UMAP and compare with motif enrichment z-scores
+```{r}
+markerRNA <- getFeatures(projHeme5, select = paste(motifs, collapse="|"), useMatrix = "GeneScoreMatrix")
+markerRNA <- markerRNA[markerRNA %ni% c("SREBF1","CEBPA-DT")]
+markerRNA
+```
+
+```{r}
+p <- plotEmbedding(
+    ArchRProj = projHeme5, 
+    colorBy = "GeneScoreMatrix", 
+    name = sort(markerRNA), 
+    embedding = "UMAP",
+    imputeWeights = getImputeWeights(projHeme5)
+)
+```
+
+```{r}
+p2 <- lapply(p, function(x){
+    x + guides(color = FALSE, fill = FALSE) + 
+    theme_ArchR(baseSize = 6.5) +
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+    theme(
+        axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank(), 
+        axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank()
+    )
+})
+do.call(cowplot::plot_grid, c(list(ncol = 3),p2))
+```
+
+### We previously linked our scATAC-seq data with corresponding scRNA-seq data, also plot the linked gene expression values
+
+```{r}
+markerRNA <- getFeatures(projHeme5, select = paste(motifs, collapse="|"), useMatrix = "GeneIntegrationMatrix")
+markerRNA <- markerRNA[markerRNA %ni% c("SREBF1","CEBPA-DT")]
+markerRNA
+```
+
+```{r}
+p <- plotEmbedding(
+    ArchRProj = projHeme5, 
+    colorBy = "GeneIntegrationMatrix", 
+    name = sort(markerRNA), 
+    embedding = "UMAP",
+    continuousSet = "blueYellow",
+    imputeWeights = getImputeWeights(projHeme5)
+)
+```
+
+```{r}
+p2 <- lapply(p, function(x){
+    x + guides(color = FALSE, fill = FALSE) + 
+    theme_ArchR(baseSize = 6.5) +
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+    theme(
+        axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank(), 
+        axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank()
+    )
+})
+do.call(cowplot::plot_grid, c(list(ncol = 3),p2))
+```
+## ChromVAR custom deviation
+### Calculate enrichment using bulk ATAC-seq peaks
+```{r}
+if("ATAC" %ni% names(projHeme5@peakAnnotation)){
+    projHeme5 <- addArchRAnnotations(ArchRProj = projHeme5, collection = "ATAC")
+}
+```
+
+```{r}
+projHeme5 <- addDeviationsMatrix(
+  ArchRProj = projHeme5, 
+  peakAnnotation = "ATAC",
+  force = TRUE
+)
+```
+
+```{r}
+plotVarDev <- getVarDeviations(projHeme5, plot = TRUE, name = "ATACMatrix")
+plotVarDev
+```
+
+```{r}
+ATACPeaks <- c("Heme_HSC", "Heme_LMPP", "Heme_Ery", "Heme_Mono", "Heme_CD4", "Heme_CD8", "Heme_B", "Heme_NK", "IAtlas_DC_Plasmacytoid")
+markerATAC <- getFeatures(projHeme5, select = paste(ATACPeaks, collapse="|"), useMatrix = "ATACMatrix")
+markerATAC <- sort(grep("z:", markerATAC, value = TRUE))
+markerATAC
+```
+
+```{r}
+p <- plotEmbedding(
+    ArchRProj = projHeme5, 
+    colorBy = "ATACMatrix", 
+    name = markerATAC, 
+    embedding = "UMAP",
+    imputeWeights = getImputeWeights(projHeme5)
+)
+```
+
+```{r}
+p2 <- lapply(p, function(x){
+    x + guides(color = FALSE, fill = FALSE) + 
+    theme_ArchR(baseSize = 6.5) +
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) +
+    theme(
+        axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank(), 
+        axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank()
+    )
+})
+do.call(cowplot::plot_grid, c(list(ncol = 3),p2))
+```
+# Motif footprinting
+```{r}
+#Get the "Motif" (CIS-BP motifs) from peakAnnotation slot
+motifPositions <- getPositions(projHeme5,name="Motif")
+```
+
+```{r}
+motifPositions
+```
+
+```{r}
+motifs <- c("GATA1", "CEBPA", "EBF1", "IRF4", "TBX21", "PAX5")
+markerMotifs <- unlist(lapply(motifs, function(x) grep(x, names(motifPositions), value = TRUE)))
+markerMotifs <- markerMotifs[markerMotifs %ni% "SREBF1_22"]
+markerMotifs
+```
+
+
+```{r}
+seFoot <- getFootprints(
+  ArchRProj = projHeme5, 
+  positions = motifPositions[markerMotifs], 
+  groupBy = "Clusters2"
+)
+```
+
+## Normalization of Footprints for Tn5 Bias
+### Without Tn5 Bias normalization, Subtracting the Tn5 Bias or Dividing by the Tn5 Bias. Results in /HemeOutput/Plots
+
+```{r}
+plotFootprints(
+  seFoot = seFoot,
+  ArchRProj = projHeme5, 
+  normMethod = "None",
+  plotName = "Footprints-No-Normalization",
+  addDOC = FALSE,
+  smoothWindow = 5
+)
+```
+
+```{r}
+plotFootprints(
+  seFoot = seFoot,
+  ArchRProj = projHeme5, 
+  normMethod = "Subtract",
+  plotName = "Footprints-Subtract-Bias",
+  addDOC = FALSE,
+  smoothWindow = 5
+)
+```
+
+```{r}
+plotFootprints(
+  seFoot = seFoot,
+  ArchRProj = projHeme5, 
+  normMethod = "Divide",
+  plotName = "Footprints-Divide-Bias",
+  addDOC = FALSE,
+  smoothWindow = 5
+)
+```
+
+### Footprinting with user-defined feature set
+```{r}
+seTSS <- getFootprints(
+  ArchRProj = projHeme5, 
+  positions = GRangesList(TSS = getTSS(projHeme5)), 
+  groupBy = "Clusters2",
+  flank = 2000
+)
+
+plotFootprints(
+  seFoot = seTSS,
+  ArchRProj = projHeme5, 
+  normMethod = "None",
+  plotName = "TSS-No-Normalization",
+  addDOC = FALSE,
+  flank = 2000,
+  flankNorm = 100
+)
+```
 
 
 
