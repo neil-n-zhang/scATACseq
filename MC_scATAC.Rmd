@@ -13,10 +13,6 @@ library(ArchR)
 library(BSgenome.Hsapiens.UCSC.hg19)
 ```
 
-```{r}
-#scATAC_PBMC_tsv=read_tsv("/Users/nzhang/Desktop/ArchR/HemeFragments/scATAC_PBMC_R1.fragments.tsv.gz",col_names = F,show_col_types = FALSE)
-#head(scATAC_PBMC_tsv)
-```
 
 # Create Arrow files
 ```{r}
@@ -362,7 +358,6 @@ saveArchRProject(ArchRProj = projHeme2, outputDirectory = "Save-ProjHeme2", load
 # scRNAseq integration
 ```{r}
 seRNA <- readRDS("scRNA-Hematopoiesis-Granja-2019.rds")
-
 ```
 
 ## Unconstrained Integration
@@ -1121,8 +1116,334 @@ plotFootprints(
 )
 ```
 
+# Co-accessibility
+
+```{r}
+projHeme5 <- addCoAccessibility(
+    ArchRProj = projHeme5,
+    reducedDims = "IterativeLSI"
+)
+```
+
+```{r}
+cA <- getCoAccessibility(
+    ArchRProj = projHeme5,
+    corCutOff = 0.5,
+    resolution = 1,
+    returnLoops = FALSE
+)
+```
+
+```{r}
+cA
+```
+
+```{r}
+metadata(cA)[[1]]
+```
 
 
+```{r}
+metadata(cA)[[1]][5]
+```
+
+```{r}
+metadata(cA)[[1]][8]
+```
+
+## Plot co-accessibility browser tracks
+```{r}
+markerGenes  <- c(
+    "CD34", #Early Progenitor
+    "GATA1", #Erythroid
+    "PAX5", "MS4A1", #B-Cell Trajectory
+    "CD14", #Monocytes
+    "CD3D", "CD8A", "TBX21", "IL7R" #TCells
+  )
+
+p <- plotBrowserTrack(
+    ArchRProj = projHeme5, 
+    groupBy = "Clusters2", 
+    geneSymbol = markerGenes, 
+    upstream = 50000,
+    downstream = 50000,
+    loops = getCoAccessibility(projHeme5)
+)
+```
+
+```{r}
+grid::grid.newpage()
+grid::grid.draw(p$CD14)
+```
+
+# Peak2GeneLinkage
+## Correlate peak accessibility to scRNA-seq gene expression
+
+```{r}
+projHeme5 <- addPeak2GeneLinks(
+    ArchRProj = projHeme5,
+    reducedDims = "IterativeLSI"
+)
+```
+
+```{r}
+p2g <- getPeak2GeneLinks(
+    ArchRProj = projHeme5,
+    corCutOff = 0.45,
+    resolution = 1,
+    returnLoops = FALSE
+)
+```
+
+
+```{r}
+p2g
+```
+
+```{r}
+metadata(p2g)[[1]]
+```
+
+```{r}
+metadata(p2g)
+```
+
+## Plot peak-to-gene links
+```{r}
+p <- plotBrowserTrack(
+    ArchRProj = projHeme5, 
+    groupBy = "Clusters2", 
+    geneSymbol = markerGenes, 
+    upstream = 50000,
+    downstream = 50000,
+    loops = getPeak2GeneLinks(projHeme5)
+)
+```
+
+```{r}
+grid::grid.newpage()
+grid::grid.draw(p$CD14)
+```
+
+## Heatmap of peak-to-gene links
+### Each row is one peak2gene link, each column is one cell
+```{r}
+p <- plotPeak2GeneHeatmap(ArchRProj = projHeme5, groupBy = "Clusters2")
+p
+```
+
+# Identify TF regulators by combining chromVAR with scRNA-seq
+# Identify the TF whose gene expression is closely correlated with its motif enrichment (MotifMatrix) and its motif enrichment is significantly different across cell clusters.
+## MotifMatrix of chromVAR deviations average by clusters
+```{r}
+seGroupMotif <- getGroupSE(ArchRProj = projHeme5, useMatrix = "MotifMatrix", groupBy = "Clusters2")
+seGroupMotif
+```
+
+### seGroupMotif has two seqnames: 1. "deviations": raw deviation. 2. "z": deviation z-score.
+### Only use the z scores here.
+```{r}
+seZ <- seGroupMotif[rowData(seGroupMotif)$seqnames=="z",]
+seZ
+```
+
+```{r}
+head(assay(seZ))
+```
+
+```{r}
+head(rowData(seZ))
+```
+
+```{r}
+head(colData(seZ))
+```
+
+### Identify the maximum delta in z-score between all clusters
+```{r}
+rowData(seZ)$maxDelta <- lapply(seq_len(ncol(seZ)), function(x){
+  rowMaxs(assay(seZ) - assay(seZ)[,x])
+}) %>% Reduce("cbind", .) %>% rowMaxs
+```
+
+```{r}
+head(rowData(seZ))
+```
+
+## Calculate the correlation between MotifMatrix and Gene score/ integrated expression
+```{r}
+corGSM_MM <- correlateMatrices(
+    ArchRProj = projHeme5,
+    useMatrix1 = "GeneScoreMatrix",
+    useMatrix2 = "MotifMatrix",
+    reducedDims = "IterativeLSI"
+)
+```
+
+```{r}
+head(corGSM_MM)
+```
+
+```{r}
+corGIM_MM <- correlateMatrices(
+    ArchRProj = projHeme5,
+    useMatrix1 = "GeneIntegrationMatrix",
+    useMatrix2 = "MotifMatrix",
+    reducedDims = "IterativeLSI"
+)
+```
+
+```{r}
+head(corGIM_MM)
+```
+
+## Add MotifMatrix max delta to the correlation data frame
+
+```{r}
+corGSM_MM$maxDelta <- rowData(seZ)[match(corGSM_MM$MotifMatrix_name, rowData(seZ)$name), "maxDelta"]
+corGIM_MM$maxDelta <- rowData(seZ)[match(corGIM_MM$MotifMatrix_name, rowData(seZ)$name), "maxDelta"]
+```
+
+## Identify positive TF regulators
+```{r}
+corGSM_MM <- corGSM_MM[order(abs(corGSM_MM$cor), decreasing = TRUE), ]
+corGSM_MM <- corGSM_MM[which(!duplicated(gsub("\\-.*","",corGSM_MM[,"MotifMatrix_name"]))), ]
+corGSM_MM$TFRegulator <- "NO"
+corGSM_MM$TFRegulator[which(corGSM_MM$cor > 0.5 & corGSM_MM$padj < 0.01 & corGSM_MM$maxDelta > quantile(corGSM_MM$maxDelta, 0.75))] <- "YES"
+sort(corGSM_MM[corGSM_MM$TFRegulator=="YES",1])
+```
+
+```{r}
+ggplot(data.frame(corGSM_MM), aes(cor, maxDelta, color = TFRegulator)) +
+  geom_point() + 
+  theme_ArchR() +
+  geom_vline(xintercept = 0, lty = "dashed") + 
+  scale_color_manual(values = c("NO"="darkgrey", "YES"="firebrick3")) +
+  xlab("Correlation To Gene Score") +
+  ylab("Max TF Motif Delta") +
+  scale_y_continuous(
+    expand = c(0,0), 
+    limits = c(0, max(corGSM_MM$maxDelta)*1.05)
+  )
+```
+```{r}
+corGIM_MM <- corGIM_MM[order(abs(corGIM_MM$cor), decreasing = TRUE), ]
+corGIM_MM <- corGIM_MM[which(!duplicated(gsub("\\-.*","",corGIM_MM[,"MotifMatrix_name"]))), ]
+corGIM_MM$TFRegulator <- "NO"
+corGIM_MM$TFRegulator[which(corGIM_MM$cor > 0.5 & corGIM_MM$padj < 0.01 & corGIM_MM$maxDelta > quantile(corGIM_MM$maxDelta, 0.75))] <- "YES"
+sort(corGIM_MM[corGIM_MM$TFRegulator=="YES",1])
+```
+
+```{r}
+ggplot(data.frame(corGIM_MM), aes(cor, maxDelta, color = TFRegulator)) +
+  geom_point() + 
+  theme_ArchR() +
+  geom_vline(xintercept = 0, lty = "dashed") + 
+  scale_color_manual(values = c("NO"="darkgrey", "YES"="firebrick3")) +
+  xlab("Correlation To Gene Expression") +
+  ylab("Max TF Motif Delta") +
+  scale_y_continuous(
+    expand = c(0,0), 
+    limits = c(0, max(corGIM_MM$maxDelta)*1.05)
+  )
+```
+
+# Trajectory analysis
+```{r}
+p1 <- plotEmbedding(ArchRProj = projHeme5, colorBy = "cellColData", name = "Clusters", embedding = "UMAP")
+p2 <- plotEmbedding(ArchRProj = projHeme5, colorBy = "cellColData", name = "Clusters2", embedding = "UMAP")
+ggAlignPlots(p1, p2, type = "h")
+```
+## Myeloid Trajectory - Monocyte Differentiation
+```{r}
+trajectory <- c("Progenitor", "GMP", "Mono")
+projHeme5 <- addTrajectory(
+    ArchRProj = projHeme5, 
+    name = "MyeloidU", 
+    groupBy = "Clusters2",
+    trajectory = trajectory, 
+    embedding = "UMAP", 
+    force = TRUE
+)
+```
+
+### Each cell has a unique pseudotime value between 0 and 100. 
+```{r}
+head(projHeme5$MyeloidU[!is.na(projHeme5$MyeloidU)])
+```
+
+```{r}
+p=plotTrajectory(projHeme5, trajectory = "MyeloidU", colorBy = "cellColData", name = "MyeloidU")
+p[[1]]
+```
+
+### Plot features along the trajectory
+```{r}
+projHeme5 <- addImputeWeights(projHeme5)
+```
+
+```{r}
+p1 <- plotTrajectory(projHeme5, trajectory = "MyeloidU", colorBy = "GeneScoreMatrix", name = "CEBPB", continuousSet = "horizonExtra")
+p2 <- plotTrajectory(projHeme5, trajectory = "MyeloidU", colorBy = "GeneIntegrationMatrix", name = "CEBPB", continuousSet = "blueYellow")
+ggAlignPlots(p1[[1]], p2[[1]], type = "h")
+```
+
+```{r}
+ggAlignPlots(p1[[2]], p2[[2]], type = "h")
+```
+### Plot several features along pseudo-time using heatmaps
+```{r}
+trajMM  <- getTrajectory(ArchRProj = projHeme5, name = "MyeloidU", useMatrix = "MotifMatrix", log2Norm = FALSE)
+```
+
+```{r}
+plotTrajectoryHeatmap(trajMM, pal = paletteContinuous(set = "solarExtra"))
+```
+```{r}
+trajGSM <- getTrajectory(ArchRProj = projHeme5, name = "MyeloidU", useMatrix = "GeneScoreMatrix", log2Norm = TRUE)
+```
+
+```{r}
+trajectoryHeatmap(trajGSM,  pal = paletteContinuous(set = "horizonExtra"))
+```
+### Correlation between features along pseudo-time
+```{r}
+corGSM_MM <- correlateTrajectories(trajGSM, trajMM)
+```
+
+```{r}
+corGSM_MM[[1]]
+```
+
+```{r}
+trajGSM2 <- trajGSM[corGSM_MM[[1]]$name1, ]
+trajMM2 <- trajMM[corGSM_MM[[1]]$name2, ]
+```
+
+```{r}
+trajCombined <- trajGSM2
+assay(trajCombined, withDimnames=FALSE) <- t(apply(assay(trajGSM2), 1, scale)) + t(apply(assay(trajMM2), 1, scale))
+```
+
+```{r}
+combinedMat <- plotTrajectoryHeatmap(trajCombined, returnMat = TRUE, varCutOff = 0)
+```
+
+```{r}
+rowOrder <- match(rownames(combinedMat), rownames(trajGSM2))
+```
+
+```{r}
+ht1 <- plotTrajectoryHeatmap(trajGSM2,  pal = paletteContinuous(set = "horizonExtra"),  varCutOff = 0, rowOrder = rowOrder)
+```
+
+```{r}
+ht2 <- plotTrajectoryHeatmap(trajMM2, pal = paletteContinuous(set = "solarExtra"), varCutOff = 0, rowOrder = rowOrder)
+```
+
+```{r}
+ht1 + ht2
+```
 
 
 
